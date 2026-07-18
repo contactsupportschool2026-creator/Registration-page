@@ -9,8 +9,29 @@ const bot = new TelegramBot(process.env.TELEGRAM_BOT_TOKEN, { polling: true });
 const DB_PATH = path.join(__dirname, 'database.json');
 const SUPPORT_TEXT = `\n\n_For any issues, contact support: @${process.env.TELEGRAM_SUPPORT_USERNAME}_`;
 
-const getDB = () => JSON.parse(fs.readFileSync(DB_PATH, 'utf-8'));
-const saveDB = (data) => fs.writeFileSync(DB_PATH, JSON.stringify(data, null, 2));
+const getDB = () => {
+    try {
+        return JSON.parse(fs.readFileSync(DB_PATH, 'utf-8'));
+    } catch (error) {
+        console.error("Error reading database:", error.message);
+        return [];
+    }
+};
+
+const saveDB = (data) => {
+    try {
+        fs.writeFileSync(DB_PATH, JSON.stringify(data, null, 2));
+    } catch (error) {
+        console.error("Error saving database:", error.message);
+    }
+};
+
+// ==========================================
+// HELPER: Check if user is admin
+// ==========================================
+function isAdmin(chatId) {
+    return chatId.toString() === process.env.TELEGRAM_CHAT_ID;
+}
 
 // Helper to generate a new Chargily Pay link for monthly renewals
 async function createRenewalLink(student) {
@@ -33,7 +54,7 @@ async function createRenewalLink(student) {
     if (idx !== -1) {
         db[idx].invoiceId = res.data.id;
         db[idx].status = 'pending'; 
-        db[idx].linkSentTimestamp = new Date().toISOString(); // Start the 20-hour countdown
+        db[idx].linkSentTimestamp = new Date().toISOString();
         saveDB(db);
     }
     return res.data.checkout_url;
@@ -58,14 +79,200 @@ bot.onText(/\/start (.+)/, async (msg, match) => {
 });
 
 // ==========================================
+// ADMIN COMMAND 1: /getall - Show All Students
+// ==========================================
+bot.onText(/\/getall/, async (msg) => {
+    const chatId = msg.chat.id;
+    
+    if (!isAdmin(chatId)) {
+        return bot.sendMessage(chatId, "⛔ *Unauthorized* - Admin only command", { parse_mode: 'Markdown' });
+    }
+
+    const db = getDB();
+    if (db.length === 0) {
+        return bot.sendMessage(chatId, "📭 *No students in database*", { parse_mode: 'Markdown' });
+    }
+
+    let message = `📊 *Total Students: ${db.length}*\n\n`;
+    
+    db.forEach((student, index) => {
+        message += `*${index + 1}. ${student.firstName} ${student.lastName}*\n`;
+        message += `   Invoice: \`${student.invoiceId}\`\n`;
+        message += `   Status: ${student.status}\n`;
+        message += `   Telegram: ${student.chatId || 'Not linked'}\n`;
+        message += `   Expires: ${student.subscriptionEndDate ? student.subscriptionEndDate.split('T')[0] : 'N/A'}\n\n`;
+    });
+
+    // Split message if too long
+    if (message.length > 4096) {
+        const chunks = message.match(/[\s\S]{1,4096}/g);
+        chunks.forEach(chunk => bot.sendMessage(chatId, chunk, { parse_mode: 'Markdown' }));
+    } else {
+        bot.sendMessage(chatId, message, { parse_mode: 'Markdown' });
+    }
+});
+
+// ==========================================
+// ADMIN COMMAND 2: /getstudent - Get Single Student
+// ==========================================
+bot.onText(/\/getstudent (.+)/, async (msg, match) => {
+    const chatId = msg.chat.id;
+    
+    if (!isAdmin(chatId)) {
+        return bot.sendMessage(chatId, "⛔ *Unauthorized* - Admin only command", { parse_mode: 'Markdown' });
+    }
+
+    const invoiceId = match[1];
+    const db = getDB();
+    const student = db.find(s => s.invoiceId === invoiceId);
+
+    if (!student) {
+        return bot.sendMessage(chatId, `❌ *Student not found* with invoice ID: \`${invoiceId}\``, { parse_mode: 'Markdown' });
+    }
+
+    const nizamiText = student.isNizami ? "نظامي" : "حر";
+    const message = `
+👤 *Student Details*
+
+*Name:* ${student.firstName} ${student.lastName}
+*Invoice:* \`${student.invoiceId}\`
+*Date of Birth:* ${student.dob}
+*Wilaya:* ${student.wilaya}
+*Specialty:* ${student.shaba}
+*School Type:* ${nizamiText}
+*School Name:* ${student.schoolName}
+
+💳 *Payment Info*
+*Status:* ${student.status}
+*Start Date:* ${student.subscriptionStartDate ? student.subscriptionStartDate.split('T')[0] : 'N/A'}
+*Expires:* ${student.subscriptionEndDate ? student.subscriptionEndDate.split('T')[0] : 'N/A'}
+
+📱 *Telegram*
+*Chat ID:* ${student.chatId || 'Not linked'}
+`;
+
+    bot.sendMessage(chatId, message, { parse_mode: 'Markdown' });
+});
+
+// ==========================================
+// ADMIN COMMAND 3: /updatestatus - Change Student Status
+// ==========================================
+bot.onText(/\/updatestatus (.+) (.+)/, async (msg, match) => {
+    const chatId = msg.chat.id;
+    
+    if (!isAdmin(chatId)) {
+        return bot.sendMessage(chatId, "⛔ *Unauthorized* - Admin only command", { parse_mode: 'Markdown' });
+    }
+
+    const invoiceId = match[1];
+    const newStatus = match[2].toLowerCase();
+    const validStatuses = ['pending', 'paid', 'warned', 'kicked'];
+
+    if (!validStatuses.includes(newStatus)) {
+        return bot.sendMessage(chatId, `❌ *Invalid status* - Use: ${validStatuses.join(', ')}`, { parse_mode: 'Markdown' });
+    }
+
+    const db = getDB();
+    const student = db.find(s => s.invoiceId === invoiceId);
+
+    if (!student) {
+        return bot.sendMessage(chatId, `❌ *Student not found* with invoice ID: \`${invoiceId}\``, { parse_mode: 'Markdown' });
+    }
+
+    const oldStatus = student.status;
+    student.status = newStatus;
+    saveDB(db);
+
+    bot.sendMessage(chatId, `✅ *Status Updated*\n\n*Student:* ${student.firstName} ${student.lastName}\n*Old Status:* ${oldStatus}\n*New Status:* ${newStatus}`, { parse_mode: 'Markdown' });
+});
+
+// ==========================================
+// ADMIN COMMAND 4: /updatechat - Link Telegram Chat ID
+// ==========================================
+bot.onText(/\/updatechat (.+) (.+)/, async (msg, match) => {
+    const chatId = msg.chat.id;
+    
+    if (!isAdmin(chatId)) {
+        return bot.sendMessage(chatId, "⛔ *Unauthorized* - Admin only command", { parse_mode: 'Markdown' });
+    }
+
+    const invoiceId = match[1];
+    const newChatId = match[2];
+
+    const db = getDB();
+    const student = db.find(s => s.invoiceId === invoiceId);
+
+    if (!student) {
+        return bot.sendMessage(chatId, `❌ *Student not found* with invoice ID: \`${invoiceId}\``, { parse_mode: 'Markdown' });
+    }
+
+    const oldChatId = student.chatId;
+    student.chatId = newChatId;
+    saveDB(db);
+
+    bot.sendMessage(chatId, `✅ *Telegram ID Linked*\n\n*Student:* ${student.firstName} ${student.lastName}\n*Old Chat ID:* ${oldChatId || 'None'}\n*New Chat ID:* ${newChatId}`, { parse_mode: 'Markdown' });
+});
+
+// ==========================================
+// ADMIN COMMAND 5: /delete - Remove Student Record
+// ==========================================
+bot.onText(/\/delete (.+)/, async (msg, match) => {
+    const chatId = msg.chat.id;
+    
+    if (!isAdmin(chatId)) {
+        return bot.sendMessage(chatId, "⛔ *Unauthorized* - Admin only command", { parse_mode: 'Markdown' });
+    }
+
+    const invoiceId = match[1];
+    const db = getDB();
+    const studentIndex = db.findIndex(s => s.invoiceId === invoiceId);
+
+    if (studentIndex === -1) {
+        return bot.sendMessage(chatId, `❌ *Student not found* with invoice ID: \`${invoiceId}\``, { parse_mode: 'Markdown' });
+    }
+
+    const student = db[studentIndex];
+    db.splice(studentIndex, 1);
+    saveDB(db);
+
+    bot.sendMessage(chatId, `✅ *Student Deleted*\n\n*Name:* ${student.firstName} ${student.lastName}\n*Invoice:* \`${invoiceId}\``, { parse_mode: 'Markdown' });
+});
+
+// ==========================================
+// ADMIN COMMAND 6: /help - Show Available Commands
+// ==========================================
+bot.onText(/\/help/, async (msg) => {
+    const chatId = msg.chat.id;
+    
+    if (!isAdmin(chatId)) {
+        return bot.sendMessage(chatId, "⛔ *Unauthorized* - Admin only command", { parse_mode: 'Markdown' });
+    }
+
+    const helpMessage = `
+🤖 *Admin Database Commands*
+
+\`/getall\` - Show all students in database
+\`/getstudent <invoiceId>\` - Get details of one student
+\`/updatestatus <invoiceId> <status>\` - Change status (pending/paid/warned/kicked)
+\`/updatechat <invoiceId> <chatId>\` - Link Telegram chat to student
+\`/delete <invoiceId>\` - Remove student from database
+\`/help\` - Show this help message
+
+📌 *Example:*
+\`/updatestatus inv_12345 paid\`
+\`/getstudent inv_12345\`
+`;
+
+    bot.sendMessage(chatId, helpMessage, { parse_mode: 'Markdown' });
+});
+
+// ==========================================
 // FEATURE 2: ADMIN COMMAND - EXTEND SUBSCRIPTION
 // ==========================================
-// Admin sends in private chat: /extend STUDENT_CHAT_ID NUMBER_OF_DAYS
 bot.onText(/\/extend (.+) (.+)/, async (msg, match) => {
     const adminChatId = msg.chat.id;
     
-    // Security: Only allow you (the admin) to use this command
-    if (adminChatId.toString() !== process.env.TELEGRAM_CHAT_ID) {
+    if (!isAdmin(adminChatId)) {
         return bot.sendMessage(adminChatId, "⛔ Unauthorized.");
     }
 
@@ -78,16 +285,14 @@ bot.onText(/\/extend (.+) (.+)/, async (msg, match) => {
         const newDate = new Date(student.subscriptionEndDate);
         newDate.setDate(newDate.getDate() + daysToAdd);
         student.subscriptionEndDate = newDate.toISOString();
-        student.status = 'paid'; // Reset status so they aren't kicked
+        student.status = 'paid';
         student.warnedTimestamp = null;
         student.linkSentTimestamp = null;
         saveDB(db);
 
-        // Notify Student
         const msgText = `📅 *Subscription Updated!\n\n*Your monthly renewal date has been adjusted by the admin. Your new due date is: ${newDate.toISOString().split('T')[0]}.${SUPPORT_TEXT}`;
         bot.sendMessage(student.chatId, msgText, { parse_mode: 'Markdown' });
 
-        // Confirm to Admin
         bot.sendMessage(adminChatId, `✅ Extended subscription for ${student.firstName} by ${daysToAdd} days.`);
     } else {
         bot.sendMessage(adminChatId, "❌ Student not found or has no active subscription.");
@@ -104,18 +309,16 @@ cron.schedule('0 8 * * *', async () => {
 
     for (let student of db) {
         if (!student.subscriptionEndDate || !student.chatId) continue;
-        if (student.status === 'kicked') continue; // Ignore kicked users
+        if (student.status === 'kicked') continue;
 
         const endDate = new Date(student.subscriptionEndDate);
         const diffTime = endDate - now;
         const diffDays = Math.ceil(diffTime / (1000 * 60 * 60 * 24));
 
-        // 1. PRE-SUBSCRIPTION REMINDER (5 to 6 days before)
         if (diffDays <= 6 && diffDays >= 5 && student.status === 'paid') {
             bot.sendMessage(student.chatId, `⏳ *Reminder!\n\n*Your subscription expires in ${diffDays} days. Please prepare for the next payment.${SUPPORT_TEXT}`, { parse_mode: 'Markdown' });
         }
 
-        // 2. PAYMENT LINK DELIVERY (Exact due day or past due, but not yet sent)
         if (diffDays <= 0 && student.status === 'paid') {
             try {
                 const checkoutUrl = await createRenewalLink(student);
@@ -140,7 +343,6 @@ cron.schedule('0 * * * *', async () => {
     for (let student of db) {
         if (!student.chatId) continue;
 
-        // CHECK 1: 20 hours passed since link was sent -> Send Final Warning
         if (student.status === 'pending' && student.linkSentTimestamp) {
             const linkSentTime = new Date(student.linkSentTimestamp);
             const hoursPassedLink = (now - linkSentTime) / (1000 * 60 * 60);
@@ -153,16 +355,13 @@ cron.schedule('0 * * * *', async () => {
             }
         }
 
-        // CHECK 2: 4 hours passed since final warning -> KICK FROM GROUP
         if (student.status === 'warned' && student.warnedTimestamp) {
             const warnedTime = new Date(student.warnedTimestamp);
             const hoursPassedWarning = (now - warnedTime) / (1000 * 60 * 60);
 
             if (hoursPassedWarning >= 4) {
-                // Double check they haven't paid (webhook updates status back to 'paid')
                 if (student.status === 'warned') {
                     try {
-                        // BOT MUST BE AN ADMIN IN THE GROUP FOR THIS TO WORK
                         await bot.banChatMember(process.env.TELEGRAM_GROUP_CHAT_ID, student.chatId);
                         bot.sendMessage(student.chatId, `❌ *Access Removed\n\n*You did not complete the payment within the allotted time. You have been removed from the group. Contact support if this is a mistake.${SUPPORT_TEXT}`, { parse_mode: 'Markdown' });
                         
