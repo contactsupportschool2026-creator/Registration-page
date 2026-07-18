@@ -35,10 +35,8 @@ document.addEventListener('DOMContentLoaded', () => {
         submitBtn.textContent = 'Processing...';
 
         try {
-            // CHANGE THIS URL TO YOUR BACKEND URL WHEN DEPLOYED
-            const BACKEND_URL = 'http://localhost:3000/api/create-checkout'; 
-            
-            const response = await fetch(BACKEND_URL, {
+            // Use relative URL - works on both localhost and production
+            const response = await fetch('/api/create-checkout', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify(formData)
