@@ -11,10 +11,17 @@ document.addEventListener('DOMContentLoaded', () => {
         e.target.value = value;
     });
 
+    // Email validation helper
+    function isValidEmail(email) {
+        const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+        return emailRegex.test(email);
+    }
+
     submitBtn.addEventListener('click', async () => {
         const formData = {
             firstName: document.getElementById('firstName').value,
             lastName: document.getElementById('lastName').value,
+            email: document.getElementById('email').value,
             dob: document.getElementById('dob').value,
             wilaya: document.getElementById('wilaya').value,
             shaba: document.getElementById('shaba').value,
@@ -22,8 +29,12 @@ document.addEventListener('DOMContentLoaded', () => {
             schoolName: document.getElementById('schoolName').value
         };
 
-        if (!formData.firstName || !formData.lastName || !formData.dob || !formData.wilaya || !formData.shaba || !formData.schoolName) {
+        if (!formData.firstName || !formData.lastName || !formData.email || !formData.dob || !formData.wilaya || !formData.shaba || !formData.schoolName) {
             alert("Please fill out all fields correctly."); return;
+        }
+
+        if (!isValidEmail(formData.email)) {
+            alert("Please enter a valid email address."); return;
         }
 
         const dateRegex = /^\d{4}-\d{2}-\d{2}$/;

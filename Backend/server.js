@@ -67,12 +67,13 @@ function verifyChargilySignature(payload, signature) {
 app.post('/api/create-checkout', async (req, res) => {
     try {
         // 1. Capture ALL data from the HTML form
-        const { firstName, lastName, dob, wilaya, shaba, isNizami, schoolName } = req.body;
+        const { firstName, lastName, email, dob, wilaya, shaba, isNizami, schoolName } = req.body;
 
         // 2. Prepare student data for our database
         const studentData = {
             firstName,
             lastName,
+            email,
             dob,
             wilaya,
             shaba,
@@ -92,7 +93,7 @@ app.post('/api/create-checkout', async (req, res) => {
             currency: 'dzd',
             description: `School Registration: ${firstName} ${lastName}`,
             client_name: `${firstName} ${lastName}`,
-            client_email: 'student@example.com', // Chargily requires an email field
+            client_email: email, // ✅ Use actual student email
             back_url: `${process.env.FRONTEND_URL}/payment.html`, // We will append invoice ID below
             webhook_url: `${process.env.BACKEND_URL}/api/webhook/chargily`
         };
@@ -175,6 +176,7 @@ app.post('/api/webhook/chargily', async (req, res) => {
 🟢 *دفعة جديدة ناجحة!*
 
 👤 *الإسم:* ${s.firstName} ${s.lastName}
+📧 *البريد:* ${s.email}
 📅 *تاريخ الميلاد:* ${s.dob}
 🏙️ *الولاية:* ${s.wilaya}
 📚 *الشعبة:* ${s.shaba}

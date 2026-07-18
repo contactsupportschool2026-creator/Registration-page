@@ -24,14 +24,14 @@
         .input-group { display: flex; flex-direction: column; gap: 8px; }
         .label-row { display: flex; justify-content: space-between; align-items: center; font-size: 0.85rem; font-weight: 500; color: #333; }
         .label-ar { font-weight: 400; color: #888; font-size: 0.8rem; }
-        input[type="text"], select {
+        input[type="text"], input[type="email"], select {
             width: 100%; padding: 14px 16px; border: 1px solid #e0e0e0; border-radius: 12px;
             background-color: #fafafa; font-family: 'JetBrains Mono', monospace; font-size: 0.9rem;
             color: #000; outline: none; transition: all 0.3s cubic-bezier(0.25, 0.8, 0.25, 1);
         }
-        input[type="text"]:focus, select:focus { border-color: #d0d0d0; background-color: #ffffff; box-shadow: 0 4px 12px rgba(0,0,0,0.05); }
+        input[type="text"]:focus, input[type="email"]:focus, select:focus { border-color: #d0d0d0; background-color: #ffffff; box-shadow: 0 4px 12px rgba(0,0,0,0.05); }
         input::placeholder { color: #bbb; }
-        .toggle-container { display: flex; align-items: center; justify-content: space-between; padding: 14px 16px; border: 1px solid #e0e0e0; border-radius: 12px; background-color: #fafafa; transition: all 0.3s ease; }
+        .toggle-container { display: flex; align-items: center; justify-content: space-between; padding: 14px 16px; border: 1px solid #e0e0e0; border-radius: 12px; background-color: #fafafa; transition: all 0.3s cubic-bezier(0.25, 0.8, 0.25, 1); }
         .toggle-switch { position: relative; width: 48px; height: 26px; cursor: pointer; }
         .toggle-switch input { opacity: 0; width: 0; height: 0; }
         .slider { position: absolute; top: 0; left: 0; right: 0; bottom: 0; background-color: #e0e0e0; transition: .3s; border-radius: 26px; }
@@ -67,6 +67,11 @@
         </div>
 
         <div class="input-group">
+            <div class="label-row"><span>Email Address <span class="label-ar">البريد الإلكتروني</span></span></div>
+            <input type="email" id="email" placeholder="e.g. ahmed@example.com" required>
+        </div>
+
+        <div class="input-group">
             <div class="label-row"><span>Date of Birth <span class="label-ar">تاريخ الميلاد</span></span></div>
             <input type="text" id="dob" placeholder="YYYY-MM-DD" maxlength="10" required>
         </div>
@@ -75,7 +80,7 @@
             <div class="label-row"><span>State <span class="label-ar">الولاية</span></span></div>
             <select id="wilaya" required>
                 <option value="" disabled selected>Select Wilaya...</option>
-                <option value="01">01 - Adrar</option><option value="02">02 - Chlef</option><option value="03">03 - Laghouat</option><option value="04">04 - Oum El Bouaghi</option><option value="05">05 - Batna</option><option value="06">06 - Béjaïa</option><option value="07">07 - Biskra</option><option value="08">08 - Béchar</option><option value="09">09 - Blida</option><option value="10">10 - Bouira</option><option value="11">11 - Tamanrasset</option><option value="12">12 - Tébessa</option><option value="13">13 - Tlemcen</option><option value="14">14 - Tiaret</option><option value="15">15 - Tizi Ouzou</option><option value="16">16 - Alger</option><option value="17">17 - Djelfa</option><option value="18">18 - Jijel</option><option value="19">19 - Sétif</option><option value="20">20 - Saïda</option><option value="21">21 - Skikda</option><option value="22">22 - Sidi Bel Abbès</option><option value="23">23 - Annaba</option><option value="24">24 - Guelma</option><option value="25">25 - Constantine</option><option value="26">26 - Médéa</option><option value="27">27 - Mostaganem</option><option value="28">28 - M'Sila</option><option value="29">29 - Mascara</option><option value="30">30 - Ouargla</option><option value="31">31 - Oran</option><option value="32">32 - El Bayadh</option><option value="33">33 - Illizi</option><option value="34">34 - Bordj Bou Arréridj</option><option value="35">35 - Boumerdès</option><option value="36">36 - El Tarf</option><option value="37">37 - Tindouf</option><option value="38">38 - Tissemsilt</option><option value="39">39 - El Oued</option><option value="40">40 - Khenchela</option><option value="41">41 - Souk Ahras</option><option value="42">42 - Tipaza</option><option value="43">43 - Mila</option><option value="44">44 - Aïn Defla</option><option value="45">45 - Naâma</option><option value="46">46 - Aïn Témouchent</option><option value="47">47 - Ghardaïa</option><option value="48">48 - Relizane</option><option value="49">49 - El M'Ghair</option><option value="50">50 - El Meniaa</option><option value="51">51 - Ouled Djellal</option><option value="52">52 - Bordj Badji Mokhtar</option><option value="53">53 - Béni Abbès</option><option value="54">54 - Timimoun</option><option value="55">55 - Touggourt</option><option value="56">56 - Djanet</option><option value="57">57 - In Salah</option><option value="58">58 - In Guezzam</option>
+                <option value="01">01 - Adrar</option><option value="02">02 - Chlef</option><option value="03">03 - Laghouat</option><option value="04">04 - Oum El Bouaghi</option><option value="05">05 - Batna</option><option value="06">06 - Béjaïa</option><option value="07">07 - Biskra</option><option value="08">08 - Bechar</option><option value="09">09 - Blida</option><option value="10">10 - Boumerdes</option><option value="11">11 - El Tarf</option><option value="12">12 - Constantine</option><option value="13">13 - Tiaret</option><option value="14">14 - Tlemcen</option><option value="15">15 - Oran</option><option value="16">16 - El Asnam</option><option value="17">17 - Djelfa</option><option value="18">18 - Jijel</option><option value="19">19 - Sétif</option><option value="20">20 - Saïda</option><option value="21">21 - Skikda</option><option value="22">22 - Sidi Bel Abbes</option><option value="23">23 - Annaba</option><option value="24">24 - Guelma</option><option value="25">25 - Tébessa</option><option value="26">26 - Khenchela</option><option value="27">27 - Souk Ahras</option><option value="28">28 - Mila</option><option value="29">29 - Aïn Défla</option><option value="30">30 - Naama</option><option value="31">31 - Ouargla</option><option value="32">32 - Oran (Wilaya)</option><option value="33">33 - El Bayadh</option><option value="34">34 - Illizi</option><option value="35">35 - Bordj Baji Mokhtar</option><option value="36">36 - Ouled Djellal</option><option value="37">37 - Béni Abbès</option><option value="38">38 - Tindouf</option><option value="39">39 - Touggourt</option><option value="40">40 - Djanet</option><option value="41">41 - El Oued</option><option value="42">42 - Khemis Miliana</option><option value="43">43 - Relizane</option><option value="44">44 - Ain Temouchent</option><option value="45">45 - Ghardaia</option><option value="46">46 - Mila</option><option value="47">47 - Aïn M'lila</option><option value="48">48 - Tassademine</option>
             </select>
         </div>
 
