@@ -1,0 +1,119 @@
+<!DOCTYPE html>
+<html lang="ar" dir="ltr">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>التسجيل - Online School</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@300;400;500;600&display=swap" rel="stylesheet">
+    
+    <style>
+        * { box-sizing: border-box; margin: 0; padding: 0; }
+        body {
+            font-family: 'JetBrains Mono', monospace;
+            background-color: #ffffff; color: #111111; line-height: 1.6;
+            padding: 20px; display: flex; justify-content: center; min-height: 100vh;
+            animation: fadeIn 0.8s ease-out;
+        }
+        @keyframes fadeIn { from { opacity: 0; transform: translateY(10px); } to { opacity: 1; transform: translateY(0); } }
+        .form-container { width: 100%; max-width: 480px; display: flex; flex-direction: column; gap: 24px; }
+        .header { text-align: center; margin-bottom: 10px; }
+        .header h1 { font-size: 1.5rem; font-weight: 600; letter-spacing: -0.5px; }
+        .header p { font-size: 0.85rem; color: #666; margin-top: 8px; }
+        .input-group { display: flex; flex-direction: column; gap: 8px; }
+        .label-row { display: flex; justify-content: space-between; align-items: center; font-size: 0.85rem; font-weight: 500; color: #333; }
+        .label-ar { font-weight: 400; color: #888; font-size: 0.8rem; }
+        input[type="text"], select {
+            width: 100%; padding: 14px 16px; border: 1px solid #e0e0e0; border-radius: 12px;
+            background-color: #fafafa; font-family: 'JetBrains Mono', monospace; font-size: 0.9rem;
+            color: #000; outline: none; transition: all 0.3s cubic-bezier(0.25, 0.8, 0.25, 1);
+        }
+        input[type="text"]:focus, select:focus { border-color: #d0d0d0; background-color: #ffffff; box-shadow: 0 4px 12px rgba(0,0,0,0.05); }
+        input::placeholder { color: #bbb; }
+        .toggle-container { display: flex; align-items: center; justify-content: space-between; padding: 14px 16px; border: 1px solid #e0e0e0; border-radius: 12px; background-color: #fafafa; transition: all 0.3s ease; }
+        .toggle-switch { position: relative; width: 48px; height: 26px; cursor: pointer; }
+        .toggle-switch input { opacity: 0; width: 0; height: 0; }
+        .slider { position: absolute; top: 0; left: 0; right: 0; bottom: 0; background-color: #e0e0e0; transition: .3s; border-radius: 26px; }
+        .slider:before { position: absolute; content: ""; height: 20px; width: 20px; left: 3px; bottom: 3px; background-color: white; transition: .3s; border-radius: 50%; box-shadow: 0 2px 4px rgba(0,0,0,0.1); }
+        .toggle-switch input:checked + .slider { background-color: #333; }
+        .toggle-switch input:checked + .slider:before { transform: translateX(22px); }
+        .submit-btn {
+            width: 100%; padding: 16px; margin-top: 10px; background-color: rgba(128, 128, 128, 0.15);
+            color: #000000; border: none; border-radius: 12px; font-family: 'JetBrains Mono', monospace;
+            font-size: 0.95rem; font-weight: 600; cursor: pointer; transition: all 0.3s cubic-bezier(0.25, 0.8, 0.25, 1);
+        }
+        .submit-btn:hover { background-color: rgba(128, 128, 128, 0.3); transform: translateY(-2px); box-shadow: 0 6px 15px rgba(0,0,0,0.08); }
+        .submit-btn:active { transform: translateY(0); }
+        .submit-btn:disabled { opacity: 0.6; cursor: not-allowed; transform: none; }
+        .price-tag { text-align: center; font-size: 0.8rem; color: #999; margin-top: -15px; }
+    </style>
+</head>
+<body>
+    <div class="form-container">
+        <div class="header">
+            <h1>Registration Form</h1>
+            <p>استمارة التسجيل</p>
+        </div>
+
+        <div class="input-group">
+            <div class="label-row"><span>First Name <span class="label-ar">الإسم</span></span></div>
+            <input type="text" id="firstName" placeholder="e.g. Ahmed" required>
+        </div>
+
+        <div class="input-group">
+            <div class="label-row"><span>Last Name <span class="label-ar">اللقب</span></span></div>
+            <input type="text" id="lastName" placeholder="e.g. Benali" required>
+        </div>
+
+        <div class="input-group">
+            <div class="label-row"><span>Date of Birth <span class="label-ar">تاريخ الميلاد</span></span></div>
+            <input type="text" id="dob" placeholder="YYYY-MM-DD" maxlength="10" required>
+        </div>
+
+        <div class="input-group">
+            <div class="label-row"><span>State <span class="label-ar">الولاية</span></span></div>
+            <select id="wilaya" required>
+                <option value="" disabled selected>Select Wilaya...</option>
+                <option value="01">01 - Adrar</option><option value="02">02 - Chlef</option><option value="03">03 - Laghouat</option><option value="04">04 - Oum El Bouaghi</option><option value="05">05 - Batna</option><option value="06">06 - Béjaïa</option><option value="07">07 - Biskra</option><option value="08">08 - Béchar</option><option value="09">09 - Blida</option><option value="10">10 - Bouira</option><option value="11">11 - Tamanrasset</option><option value="12">12 - Tébessa</option><option value="13">13 - Tlemcen</option><option value="14">14 - Tiaret</option><option value="15">15 - Tizi Ouzou</option><option value="16">16 - Alger</option><option value="17">17 - Djelfa</option><option value="18">18 - Jijel</option><option value="19">19 - Sétif</option><option value="20">20 - Saïda</option><option value="21">21 - Skikda</option><option value="22">22 - Sidi Bel Abbès</option><option value="23">23 - Annaba</option><option value="24">24 - Guelma</option><option value="25">25 - Constantine</option><option value="26">26 - Médéa</option><option value="27">27 - Mostaganem</option><option value="28">28 - M'Sila</option><option value="29">29 - Mascara</option><option value="30">30 - Ouargla</option><option value="31">31 - Oran</option><option value="32">32 - El Bayadh</option><option value="33">33 - Illizi</option><option value="34">34 - Bordj Bou Arréridj</option><option value="35">35 - Boumerdès</option><option value="36">36 - El Tarf</option><option value="37">37 - Tindouf</option><option value="38">38 - Tissemsilt</option><option value="39">39 - El Oued</option><option value="40">40 - Khenchela</option><option value="41">41 - Souk Ahras</option><option value="42">42 - Tipaza</option><option value="43">43 - Mila</option><option value="44">44 - Aïn Defla</option><option value="45">45 - Naâma</option><option value="46">46 - Aïn Témouchent</option><option value="47">47 - Ghardaïa</option><option value="48">48 - Relizane</option><option value="49">49 - El M'Ghair</option><option value="50">50 - El Meniaa</option><option value="51">51 - Ouled Djellal</option><option value="52">52 - Bordj Badji Mokhtar</option><option value="53">53 - Béni Abbès</option><option value="54">54 - Timimoun</option><option value="55">55 - Touggourt</option><option value="56">56 - Djanet</option><option value="57">57 - In Salah</option><option value="58">58 - In Guezzam</option>
+            </select>
+        </div>
+
+        <div class="input-group">
+            <div class="label-row"><span>High School Specialty <span class="label-ar">الشعبة</span></span></div>
+            <select id="shaba" required>
+                <option value="" disabled selected>Select Specialty...</option>
+                <option value="sciences expérimentales">Sciences Expérimentales (علوم تجريبية)</option>
+                <option value="mathématiques">Mathématiques (رياضيات)</option>
+                <option value="technique mathématiques">Technique Mathématiques (تقني رياضي)</option>
+                <option value="gestion et économie">Gestion et Économie (تسيير واقتصاد)</option>
+                <option value="lettres et philosophie">Lettres et Philosophie (آداب وفلسفة)</option>
+                <option value="langues étrangères">Langues Étrangères (لغات أجنبية)</option>
+                <option value="technique sciences expérimentales">Tech. Sciences Exp. (تقني علوم تجريبية)</option>
+                <option value="informatique">Informatique (إعلام آلي)</option>
+            </select>
+        </div>
+
+        <div class="input-group">
+            <div class="toggle-container">
+                <span>School Type: Nizami? <span class="label-ar">نظامي</span></span>
+                <label class="toggle-switch">
+                    <input type="checkbox" id="nizami">
+                    <span class="slider"></span>
+                </label>
+            </div>
+        </div>
+
+        <div class="input-group">
+            <div class="label-row"><span>High School Name</span></div>
+            <input type="text" id="schoolName" placeholder="e.g. Lycée Mohamed Boudiaf" required>
+        </div>
+
+        <p class="price-tag">Monthly Fee: 2000 DA</p>
+
+        <button type="button" class="submit-btn" id="submitBtn">Proceed to Payment</button>
+    </div>
+
+    <script src="script.js"></script>
+</body>
+                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                         </html>
