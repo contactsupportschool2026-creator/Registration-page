@@ -1,46 +1,15 @@
 const TelegramBot = require('node-telegram-bot-api');
-const cron = require('node-cron');
-const axios = require('axios');
-const fs = require('fs');
-const path = require('path');
+const cron        = require('node-cron');
+const axios       = require('axios');
 require('dotenv').config();
 
-const bot = new TelegramBot(process.env.TELEGRAM_BOT_TOKEN, { polling: true });
-const DB_PATH = path.join(__dirname, 'database.json');
+const { initializeDB, readDB, withDB } = require('./db');
+
+const bot          = new TelegramBot(process.env.TELEGRAM_BOT_TOKEN, { polling: true });
 const SUPPORT_TEXT = `\n\n_For any issues, contact support: @${process.env.TELEGRAM_SUPPORT_USERNAME}_`;
 
-// ==========================================
-// DATABASE HELPERS (with proper error propagation)
-// ==========================================
-
-/**
- * Read and parse the database file.
- * Throws an error if the file cannot be read or parsed,
- * so callers can decide how to handle the failure.
- */
-const getDB = () => {
-    try {
-        const raw = fs.readFileSync(DB_PATH, 'utf-8');
-        return JSON.parse(raw);
-    } catch (error) {
-        console.error("❌ [getDB] Failed to read database:", error.message);
-        throw new Error(`Database read failed: ${error.message}`);
-    }
-};
-
-/**
- * Write data to the database file.
- * Throws an error if the write fails so callers are not
- * left thinking the save succeeded.
- */
-const saveDB = (data) => {
-    try {
-        fs.writeFileSync(DB_PATH, JSON.stringify(data, null, 2));
-    } catch (error) {
-        console.error("❌ [saveDB] Failed to write database:", error.message);
-        throw new Error(`Database write failed: ${error.message}`);
-    }
-};
+// Ensure the database file exists before the bot starts handling messages
+initializeDB();
 
 // ==========================================
 // HELPER: Check if user is admin
@@ -60,31 +29,37 @@ async function safeSend(chatId, text, options = {}) {
     }
 }
 
-// Helper to generate a new Chargily Pay link for monthly renewals
+// ==========================================
+// HELPER: Generate a new Chargily renewal link
+// ==========================================
 async function createRenewalLink(student) {
     const payload = {
-        amount: 2000,
-        currency: 'dzd',
+        amount:      2000,
+        currency:    'dzd',
         description: `Renouvellement: ${student.firstName} ${student.lastName}`,
         client_name: `${student.firstName} ${student.lastName}`,
-        client_email: 'student@example.com',
-        back_url: `${process.env.FRONTEND_URL}/payment.html`,
+        client_email:'student@example.com',
+        back_url:    `${process.env.FRONTEND_URL}/payment.html`,
         webhook_url: `${process.env.BACKEND_URL}/api/webhook/chargily`
     };
 
     const res = await axios.post('https://pay.chargily.com/api/v2/checkouts', payload, {
-        headers: { 'Authorization': `Bearer ${process.env.CHARGILY_SECRET_KEY}`, 'Content-Type': 'application/json' }
+        headers: {
+            'Authorization': `Bearer ${process.env.CHARGILY_SECRET_KEY}`,
+            'Content-Type': 'application/json'
+        }
     });
 
-    // Update DB with new invoice ID so webhook recognizes the new payment
-    const db = getDB();
-    const idx = db.findIndex(s => s.chatId === student.chatId);
-    if (idx !== -1) {
-        db[idx].invoiceId = res.data.id;
-        db[idx].status = 'pending';
-        db[idx].linkSentTimestamp = new Date().toISOString();
-        saveDB(db);
-    }
+    // withDB acquires the cross-process lock before updating the student record
+    await withDB(db => {
+        const idx = db.findIndex(s => s.chatId === student.chatId);
+        if (idx !== -1) {
+            db[idx].invoiceId         = res.data.id;
+            db[idx].status            = 'pending';
+            db[idx].linkSentTimestamp = new Date().toISOString();
+        }
+    });
+
     return res.data.checkout_url;
 }
 
@@ -92,22 +67,27 @@ async function createRenewalLink(student) {
 // FEATURE 1: STUDENT REGISTERS THEIR TELEGRAM ID
 // ==========================================
 bot.onText(/\/start (.+)/, async (msg, match) => {
-    const chatId = msg.chat.id;
+    const chatId    = msg.chat.id;
     const invoiceId = match[1];
 
     try {
-        const db = getDB();
-        const student = db.find(s => s.invoiceId === invoiceId);
+        let studentName = null;
 
-        if (student) {
-            student.chatId = chatId;
-            saveDB(db);
-            await safeSend(chatId, `✅ Welcome ${student.firstName}! Your Telegram account is now linked to our system.${SUPPORT_TEXT}`, { parse_mode: 'Markdown' });
+        await withDB(db => {
+            const student = db.find(s => s.invoiceId === invoiceId);
+            if (student) {
+                student.chatId = chatId;
+                studentName    = student.firstName;
+            }
+        });
+
+        if (studentName) {
+            await safeSend(chatId, `✅ Welcome ${studentName}! Your Telegram account is now linked to our system.${SUPPORT_TEXT}`, { parse_mode: 'Markdown' });
         } else {
             await safeSend(chatId, `❌ Invoice ID not recognized. Make sure you clicked the correct link after payment.${SUPPORT_TEXT}`, { parse_mode: 'Markdown' });
         }
     } catch (error) {
-        console.error("❌ [/start] Error:", error.message);
+        console.error('❌ [/start] Error:', error.message);
         await safeSend(chatId, `⚠️ A system error occurred while linking your account. Please try again or contact support.${SUPPORT_TEXT}`, { parse_mode: 'Markdown' });
     }
 });
@@ -117,19 +97,16 @@ bot.onText(/\/start (.+)/, async (msg, match) => {
 // ==========================================
 bot.onText(/\/getall/, async (msg) => {
     const chatId = msg.chat.id;
-
-    if (!isAdmin(chatId)) {
-        return safeSend(chatId, "⛔ *Unauthorized* - Admin only command", { parse_mode: 'Markdown' });
-    }
+    if (!isAdmin(chatId)) return safeSend(chatId, '⛔ *Unauthorized* - Admin only command', { parse_mode: 'Markdown' });
 
     try {
-        const db = getDB();
+        const db = await readDB();
+
         if (db.length === 0) {
-            return safeSend(chatId, "📭 *No students in database*", { parse_mode: 'Markdown' });
+            return safeSend(chatId, '📭 *No students in database*', { parse_mode: 'Markdown' });
         }
 
         let message = `📊 *Total Students: ${db.length}*\n\n`;
-
         db.forEach((student, index) => {
             message += `*${index + 1}. ${student.firstName} ${student.lastName}*\n`;
             message += `   Invoice: \`${student.invoiceId}\`\n`;
@@ -138,42 +115,253 @@ bot.onText(/\/getall/, async (msg) => {
             message += `   Expires: ${student.subscriptionEndDate ? student.subscriptionEndDate.split('T')[0] : 'N/A'}\n\n`;
         });
 
-        // Split message if too long
         if (message.length > 4096) {
             const chunks = message.match(/[\s\S]{1,4096}/g);
-            for (const chunk of chunks) {
-                await safeSend(chatId, chunk, { parse_mode: 'Markdown' });
-            }
+            for (const chunk of chunks) await safeSend(chatId, chunk, { parse_mode: 'Markdown' });
         } else {
             await safeSend(chatId, message, { parse_mode: 'Markdown' });
         }
     } catch (error) {
-        console.error("❌ [/getall] Error:", error.message);
+        console.error('❌ [/getall] Error:', error.message);
         await safeSend(chatId, `⚠️ Failed to retrieve student list: ${error.message}`, { parse_mode: 'Markdown' });
     }
 });
 
 // ==========================================
-// ADMIN COMMAND 2: /getstudent - Get Single Student
+// ADMIN COMMAND 2: /getstudent - Get Single Student by Invoice ID
 // ==========================================
 bot.onText(/\/getstudent (.+)/, async (msg, match) => {
     const chatId = msg.chat.id;
-
-    if (!isAdmin(chatId)) {
-        return safeSend(chatId, "⛔ *Unauthorized* - Admin only command", { parse_mode: 'Markdown' });
-    }
+    if (!isAdmin(chatId)) return safeSend(chatId, '⛔ *Unauthorized* - Admin only command', { parse_mode: 'Markdown' });
 
     try {
-        const invoiceId = match[1];
-        const db = getDB();
-        const student = db.find(s => s.invoiceId === invoiceId);
+        const invoiceId = match[1].trim();
+        const db        = await readDB();
+        const student   = db.find(s => s.invoiceId === invoiceId);
 
         if (!student) {
             return safeSend(chatId, `❌ *Student not found* with invoice ID: \`${invoiceId}\``, { parse_mode: 'Markdown' });
         }
 
-        const nizamiText = student.isNizami ? "نظامي" : "حر";
-        const message = `
+        await safeSend(chatId, formatStudentCard(student), { parse_mode: 'Markdown' });
+    } catch (error) {
+        console.error('❌ [/getstudent] Error:', error.message);
+        await safeSend(chatId, `⚠️ Failed to retrieve student: ${error.message}`, { parse_mode: 'Markdown' });
+    }
+});
+
+// ==========================================
+// ADMIN COMMAND: /search - Find Students by Name
+// ==========================================
+bot.onText(/\/search (.+)/, async (msg, match) => {
+    const chatId = msg.chat.id;
+    if (!isAdmin(chatId)) return safeSend(chatId, '⛔ *Unauthorized* - Admin only command', { parse_mode: 'Markdown' });
+
+    try {
+        const query   = match[1].trim().toLowerCase();
+        const db      = await readDB();
+        const results = db.filter(s => {
+            const fullName = `${s.firstName} ${s.lastName}`.toLowerCase();
+            return fullName.includes(query) ||
+                   s.firstName.toLowerCase().includes(query) ||
+                   s.lastName.toLowerCase().includes(query);
+        });
+
+        if (results.length === 0) {
+            return safeSend(chatId, `🔍 No students found matching "*${match[1].trim()}*"`, { parse_mode: 'Markdown' });
+        }
+
+        // If multiple matches, show a compact list first
+        if (results.length > 1) {
+            let list = `🔍 *${results.length} students found for "${match[1].trim()}":*\n\n`;
+            results.forEach((s, i) => {
+                list += `*${i + 1}.* ${s.firstName} ${s.lastName} — \`${s.invoiceId}\` — ${s.status}\n`;
+            });
+            list += `\nUse /getstudent <invoiceId> for full details.`;
+            await safeSend(chatId, list, { parse_mode: 'Markdown' });
+        } else {
+            // Single match — show full card immediately
+            await safeSend(chatId, formatStudentCard(results[0]), { parse_mode: 'Markdown' });
+        }
+    } catch (error) {
+        console.error('❌ [/search] Error:', error.message);
+        await safeSend(chatId, `⚠️ Failed to search students: ${error.message}`, { parse_mode: 'Markdown' });
+    }
+});
+
+// ==========================================
+// ADMIN COMMAND 3: /updatestatus - Change Student Status
+// ==========================================
+bot.onText(/\/updatestatus (.+) (.+)/, async (msg, match) => {
+    const chatId = msg.chat.id;
+    if (!isAdmin(chatId)) return safeSend(chatId, '⛔ *Unauthorized* - Admin only command', { parse_mode: 'Markdown' });
+
+    try {
+        const invoiceId    = match[1].trim();
+        const newStatus    = match[2].toLowerCase();
+        const validStatuses = ['pending', 'paid', 'warned', 'kicked'];
+
+        if (!validStatuses.includes(newStatus)) {
+            return safeSend(chatId, `❌ *Invalid status* - Use: ${validStatuses.join(', ')}`, { parse_mode: 'Markdown' });
+        }
+
+        let result = null;
+        await withDB(db => {
+            const student = db.find(s => s.invoiceId === invoiceId);
+            if (student) {
+                result = { name: `${student.firstName} ${student.lastName}`, old: student.status };
+                student.status = newStatus;
+            }
+        });
+
+        if (!result) {
+            return safeSend(chatId, `❌ *Student not found* with invoice ID: \`${invoiceId}\``, { parse_mode: 'Markdown' });
+        }
+
+        await safeSend(chatId, `✅ *Status Updated*\n\n*Student:* ${result.name}\n*Old Status:* ${result.old}\n*New Status:* ${newStatus}`, { parse_mode: 'Markdown' });
+    } catch (error) {
+        console.error('❌ [/updatestatus] Error:', error.message);
+        await safeSend(chatId, `⚠️ Failed to update status: ${error.message}`, { parse_mode: 'Markdown' });
+    }
+});
+
+// ==========================================
+// ADMIN COMMAND 4: /updatechat - Link Telegram Chat ID
+// ==========================================
+bot.onText(/\/updatechat (.+) (.+)/, async (msg, match) => {
+    const chatId = msg.chat.id;
+    if (!isAdmin(chatId)) return safeSend(chatId, '⛔ *Unauthorized* - Admin only command', { parse_mode: 'Markdown' });
+
+    try {
+        const invoiceId  = match[1].trim();
+        const newChatId  = match[2].trim();
+        let result       = null;
+
+        await withDB(db => {
+            const student = db.find(s => s.invoiceId === invoiceId);
+            if (student) {
+                result             = { name: `${student.firstName} ${student.lastName}`, old: student.chatId };
+                student.chatId     = newChatId;
+            }
+        });
+
+        if (!result) {
+            return safeSend(chatId, `❌ *Student not found* with invoice ID: \`${invoiceId}\``, { parse_mode: 'Markdown' });
+        }
+
+        await safeSend(chatId, `✅ *Telegram ID Linked*\n\n*Student:* ${result.name}\n*Old Chat ID:* ${result.old || 'None'}\n*New Chat ID:* ${newChatId}`, { parse_mode: 'Markdown' });
+    } catch (error) {
+        console.error('❌ [/updatechat] Error:', error.message);
+        await safeSend(chatId, `⚠️ Failed to link chat ID: ${error.message}`, { parse_mode: 'Markdown' });
+    }
+});
+
+// ==========================================
+// ADMIN COMMAND 5: /delete - Remove Student Record
+// ==========================================
+bot.onText(/\/delete (.+)/, async (msg, match) => {
+    const chatId = msg.chat.id;
+    if (!isAdmin(chatId)) return safeSend(chatId, '⛔ *Unauthorized* - Admin only command', { parse_mode: 'Markdown' });
+
+    try {
+        const invoiceId = match[1].trim();
+        let deleted     = null;
+
+        await withDB(db => {
+            const idx = db.findIndex(s => s.invoiceId === invoiceId);
+            if (idx !== -1) {
+                deleted = db.splice(idx, 1)[0];
+            }
+        });
+
+        if (!deleted) {
+            return safeSend(chatId, `❌ *Student not found* with invoice ID: \`${invoiceId}\``, { parse_mode: 'Markdown' });
+        }
+
+        await safeSend(chatId, `✅ *Student Deleted*\n\n*Name:* ${deleted.firstName} ${deleted.lastName}\n*Invoice:* \`${invoiceId}\``, { parse_mode: 'Markdown' });
+    } catch (error) {
+        console.error('❌ [/delete] Error:', error.message);
+        await safeSend(chatId, `⚠️ Failed to delete student: ${error.message}`, { parse_mode: 'Markdown' });
+    }
+});
+
+// ==========================================
+// ADMIN COMMAND 6: /help - Show Available Commands
+// ==========================================
+bot.onText(/\/help/, async (msg) => {
+    const chatId = msg.chat.id;
+    if (!isAdmin(chatId)) return safeSend(chatId, '⛔ *Unauthorized* - Admin only command', { parse_mode: 'Markdown' });
+
+    const helpMessage = `
+🤖 *Admin Commands*
+
+*📋 View Students*
+\`/getall\` — List all students
+\`/getstudent <invoiceId>\` — Full details for one student
+\`/search <name>\` — Search students by first or last name
+
+*✏️ Edit Records*
+\`/updatestatus <invoiceId> <status>\` — Change status (pending/paid/warned/kicked)
+\`/updatechat <invoiceId> <chatId>\` — Link a Telegram chat to a student
+\`/extend <chatId> <days>\` — Extend a student's subscription
+\`/delete <invoiceId>\` — Remove a student from the database
+
+📌 *Examples:*
+\`/search Ahmed\`
+\`/updatestatus inv_12345 paid\`
+\`/getstudent inv_12345\`
+`;
+
+    await safeSend(chatId, helpMessage, { parse_mode: 'Markdown' });
+});
+
+// ==========================================
+// FEATURE 2: ADMIN COMMAND - EXTEND SUBSCRIPTION
+// ==========================================
+bot.onText(/\/extend (.+) (.+)/, async (msg, match) => {
+    const adminChatId = msg.chat.id;
+    if (!isAdmin(adminChatId)) return safeSend(adminChatId, '⛔ Unauthorized.');
+
+    try {
+        const targetChatId = match[1].trim();
+        const daysToAdd    = parseInt(match[2]);
+
+        if (isNaN(daysToAdd) || daysToAdd <= 0) {
+            return safeSend(adminChatId, '❌ Invalid number of days. Use a positive integer.');
+        }
+
+        let result = null;
+        await withDB(db => {
+            const student = db.find(s => s.chatId && s.chatId.toString() === targetChatId);
+            if (student && student.subscriptionEndDate) {
+                const newDate = new Date(student.subscriptionEndDate);
+                newDate.setDate(newDate.getDate() + daysToAdd);
+                student.subscriptionEndDate = newDate.toISOString();
+                student.status              = 'paid';
+                student.warnedTimestamp     = null;
+                student.linkSentTimestamp   = null;
+                result = { name: student.firstName, studentChatId: student.chatId, newDate: newDate.toISOString().split('T')[0] };
+            }
+        });
+
+        if (!result) {
+            return safeSend(adminChatId, '❌ Student not found or has no active subscription.');
+        }
+
+        await safeSend(result.studentChatId, `📅 *Subscription Updated!*\n\nYour renewal date has been adjusted by the admin. Your new due date is: ${result.newDate}.${SUPPORT_TEXT}`, { parse_mode: 'Markdown' });
+        await safeSend(adminChatId, `✅ Extended subscription for ${result.name} by ${daysToAdd} days.`);
+    } catch (error) {
+        console.error('❌ [/extend] Error:', error.message);
+        await safeSend(adminChatId, `⚠️ Failed to extend subscription: ${error.message}`);
+    }
+});
+
+// ==========================================
+// HELPER: Format a student record as a Telegram card
+// ==========================================
+function formatStudentCard(student) {
+    const nizamiText = student.isNizami ? 'نظامي' : 'حر';
+    return `
 👤 *Student Details*
 
 *Name:* ${student.firstName} ${student.lastName}
@@ -192,195 +380,19 @@ bot.onText(/\/getstudent (.+)/, async (msg, match) => {
 📱 *Telegram*
 *Chat ID:* ${student.chatId || 'Not linked'}
 `;
-
-        await safeSend(chatId, message, { parse_mode: 'Markdown' });
-    } catch (error) {
-        console.error("❌ [/getstudent] Error:", error.message);
-        await safeSend(chatId, `⚠️ Failed to retrieve student: ${error.message}`, { parse_mode: 'Markdown' });
-    }
-});
-
-// ==========================================
-// ADMIN COMMAND 3: /updatestatus - Change Student Status
-// ==========================================
-bot.onText(/\/updatestatus (.+) (.+)/, async (msg, match) => {
-    const chatId = msg.chat.id;
-
-    if (!isAdmin(chatId)) {
-        return safeSend(chatId, "⛔ *Unauthorized* - Admin only command", { parse_mode: 'Markdown' });
-    }
-
-    try {
-        const invoiceId = match[1];
-        const newStatus = match[2].toLowerCase();
-        const validStatuses = ['pending', 'paid', 'warned', 'kicked'];
-
-        if (!validStatuses.includes(newStatus)) {
-            return safeSend(chatId, `❌ *Invalid status* - Use: ${validStatuses.join(', ')}`, { parse_mode: 'Markdown' });
-        }
-
-        const db = getDB();
-        const student = db.find(s => s.invoiceId === invoiceId);
-
-        if (!student) {
-            return safeSend(chatId, `❌ *Student not found* with invoice ID: \`${invoiceId}\``, { parse_mode: 'Markdown' });
-        }
-
-        const oldStatus = student.status;
-        student.status = newStatus;
-        saveDB(db);
-
-        await safeSend(chatId, `✅ *Status Updated*\n\n*Student:* ${student.firstName} ${student.lastName}\n*Old Status:* ${oldStatus}\n*New Status:* ${newStatus}`, { parse_mode: 'Markdown' });
-    } catch (error) {
-        console.error("❌ [/updatestatus] Error:", error.message);
-        await safeSend(chatId, `⚠️ Failed to update status: ${error.message}`, { parse_mode: 'Markdown' });
-    }
-});
-
-// ==========================================
-// ADMIN COMMAND 4: /updatechat - Link Telegram Chat ID
-// ==========================================
-bot.onText(/\/updatechat (.+) (.+)/, async (msg, match) => {
-    const chatId = msg.chat.id;
-
-    if (!isAdmin(chatId)) {
-        return safeSend(chatId, "⛔ *Unauthorized* - Admin only command", { parse_mode: 'Markdown' });
-    }
-
-    try {
-        const invoiceId = match[1];
-        const newChatId = match[2];
-
-        const db = getDB();
-        const student = db.find(s => s.invoiceId === invoiceId);
-
-        if (!student) {
-            return safeSend(chatId, `❌ *Student not found* with invoice ID: \`${invoiceId}\``, { parse_mode: 'Markdown' });
-        }
-
-        const oldChatId = student.chatId;
-        student.chatId = newChatId;
-        saveDB(db);
-
-        await safeSend(chatId, `✅ *Telegram ID Linked*\n\n*Student:* ${student.firstName} ${student.lastName}\n*Old Chat ID:* ${oldChatId || 'None'}\n*New Chat ID:* ${newChatId}`, { parse_mode: 'Markdown' });
-    } catch (error) {
-        console.error("❌ [/updatechat] Error:", error.message);
-        await safeSend(chatId, `⚠️ Failed to link chat ID: ${error.message}`, { parse_mode: 'Markdown' });
-    }
-});
-
-// ==========================================
-// ADMIN COMMAND 5: /delete - Remove Student Record
-// ==========================================
-bot.onText(/\/delete (.+)/, async (msg, match) => {
-    const chatId = msg.chat.id;
-
-    if (!isAdmin(chatId)) {
-        return safeSend(chatId, "⛔ *Unauthorized* - Admin only command", { parse_mode: 'Markdown' });
-    }
-
-    try {
-        const invoiceId = match[1];
-        const db = getDB();
-        const studentIndex = db.findIndex(s => s.invoiceId === invoiceId);
-
-        if (studentIndex === -1) {
-            return safeSend(chatId, `❌ *Student not found* with invoice ID: \`${invoiceId}\``, { parse_mode: 'Markdown' });
-        }
-
-        const student = db[studentIndex];
-        db.splice(studentIndex, 1);
-        saveDB(db);
-
-        await safeSend(chatId, `✅ *Student Deleted*\n\n*Name:* ${student.firstName} ${student.lastName}\n*Invoice:* \`${invoiceId}\``, { parse_mode: 'Markdown' });
-    } catch (error) {
-        console.error("❌ [/delete] Error:", error.message);
-        await safeSend(chatId, `⚠️ Failed to delete student: ${error.message}`, { parse_mode: 'Markdown' });
-    }
-});
-
-// ==========================================
-// ADMIN COMMAND 6: /help - Show Available Commands
-// ==========================================
-bot.onText(/\/help/, async (msg) => {
-    const chatId = msg.chat.id;
-
-    if (!isAdmin(chatId)) {
-        return safeSend(chatId, "⛔ *Unauthorized* - Admin only command", { parse_mode: 'Markdown' });
-    }
-
-    const helpMessage = `
-🤖 *Admin Database Commands*
-
-\`/getall\` - Show all students in database
-\`/getstudent <invoiceId>\` - Get details of one student
-\`/updatestatus <invoiceId> <status>\` - Change status (pending/paid/warned/kicked)
-\`/updatechat <invoiceId> <chatId>\` - Link Telegram chat to student
-\`/delete <invoiceId>\` - Remove student from database
-\`/extend <chatId> <days>\` - Extend a student's subscription
-\`/help\` - Show this help message
-
-📌 *Example:*
-\`/updatestatus inv_12345 paid\`
-\`/getstudent inv_12345\`
-`;
-
-    await safeSend(chatId, helpMessage, { parse_mode: 'Markdown' });
-});
-
-// ==========================================
-// FEATURE 2: ADMIN COMMAND - EXTEND SUBSCRIPTION
-// ==========================================
-bot.onText(/\/extend (.+) (.+)/, async (msg, match) => {
-    const adminChatId = msg.chat.id;
-
-    if (!isAdmin(adminChatId)) {
-        return safeSend(adminChatId, "⛔ Unauthorized.");
-    }
-
-    try {
-        const targetChatId = match[1];
-        const daysToAdd = parseInt(match[2]);
-
-        if (isNaN(daysToAdd) || daysToAdd <= 0) {
-            return safeSend(adminChatId, "❌ Invalid number of days. Use a positive integer.");
-        }
-
-        const db = getDB();
-        const student = db.find(s => s.chatId && s.chatId.toString() === targetChatId);
-
-        if (!student || !student.subscriptionEndDate) {
-            return safeSend(adminChatId, "❌ Student not found or has no active subscription.");
-        }
-
-        const newDate = new Date(student.subscriptionEndDate);
-        newDate.setDate(newDate.getDate() + daysToAdd);
-        student.subscriptionEndDate = newDate.toISOString();
-        student.status = 'paid';
-        student.warnedTimestamp = null;
-        student.linkSentTimestamp = null;
-        saveDB(db);
-
-        const msgText = `📅 *Subscription Updated!*\n\nYour monthly renewal date has been adjusted by the admin. Your new due date is: ${newDate.toISOString().split('T')[0]}.${SUPPORT_TEXT}`;
-        await safeSend(student.chatId, msgText, { parse_mode: 'Markdown' });
-        await safeSend(adminChatId, `✅ Extended subscription for ${student.firstName} by ${daysToAdd} days.`);
-    } catch (error) {
-        console.error("❌ [/extend] Error:", error.message);
-        await safeSend(adminChatId, `⚠️ Failed to extend subscription: ${error.message}`);
-    }
-});
+}
 
 // ==========================================
 // FEATURE 3: DAILY 8:00 AM CRON JOB (Reminders & Due Links)
 // ==========================================
 cron.schedule('0 8 * * *', async () => {
-    console.log("Running 8:00 AM subscription check...");
+    console.log('Running 8:00 AM subscription check...');
 
     let db;
     try {
-        db = getDB();
+        db = await readDB();
     } catch (error) {
-        console.error("❌ [cron:daily] Cannot read database, skipping run:", error.message);
+        console.error('❌ [cron:daily] Cannot read database, skipping run:', error.message);
         return;
     }
 
@@ -391,7 +403,7 @@ cron.schedule('0 8 * * *', async () => {
         if (student.status === 'kicked') continue;
 
         try {
-            const endDate = new Date(student.subscriptionEndDate);
+            const endDate  = new Date(student.subscriptionEndDate);
             const diffTime = endDate - now;
             const diffDays = Math.ceil(diffTime / (1000 * 60 * 60 * 24));
 
@@ -402,31 +414,28 @@ cron.schedule('0 8 * * *', async () => {
             if (diffDays <= 0 && student.status === 'paid') {
                 try {
                     const checkoutUrl = await createRenewalLink(student);
-                    await safeSend(student.chatId, `💰 *Payment Due Today!*\n\nYour monthly subscription has ended. Please click the link below to renew your access:\n\n${checkoutUrl}${SUPPORT_TEXT}`, { parse_mode: 'Markdown' });
+                    await safeSend(student.chatId, `💰 *Payment Due Today!*\n\nYour monthly subscription has ended. Please renew your access:\n\n${checkoutUrl}${SUPPORT_TEXT}`, { parse_mode: 'Markdown' });
                 } catch (err) {
                     console.error(`❌ [cron:daily] Failed to create renewal link for ${student.firstName}:`, err.message);
                 }
             }
         } catch (error) {
-            console.error(`❌ [cron:daily] Error processing student ${student.firstName} ${student.lastName}:`, error.message);
-            // Continue to next student
+            console.error(`❌ [cron:daily] Error processing ${student.firstName} ${student.lastName}:`, error.message);
         }
     }
-}, {
-    timezone: "Africa/Algiers"
-});
+}, { timezone: 'Africa/Algiers' });
 
 // ==========================================
 // FEATURE 4: NON-PAYMENT ENFORCEMENT (Runs every hour)
 // ==========================================
 cron.schedule('0 * * * *', async () => {
-    console.log("Running hourly check for warnings and kicks...");
+    console.log('Running hourly check for warnings and kicks...');
 
     let db;
     try {
-        db = getDB();
+        db = await readDB();
     } catch (error) {
-        console.error("❌ [cron:hourly] Cannot read database, skipping run:", error.message);
+        console.error('❌ [cron:hourly] Cannot read database, skipping run:', error.message);
         return;
     }
 
@@ -437,40 +446,40 @@ cron.schedule('0 * * * *', async () => {
 
         try {
             if (student.status === 'pending' && student.linkSentTimestamp) {
-                const linkSentTime = new Date(student.linkSentTimestamp);
-                const hoursPassedLink = (now - linkSentTime) / (1000 * 60 * 60);
+                const hoursPassedLink = (now - new Date(student.linkSentTimestamp)) / (1000 * 60 * 60);
 
                 if (hoursPassedLink >= 20 && !student.warnedTimestamp) {
-                    student.status = 'warned';
-                    student.warnedTimestamp = now.toISOString();
-                    saveDB(db);
+                    await withDB(db2 => {
+                        const s = db2.find(x => x.invoiceId === student.invoiceId);
+                        if (s && s.status === 'pending' && !s.warnedTimestamp) {
+                            s.status          = 'warned';
+                            s.warnedTimestamp = now.toISOString();
+                        }
+                    });
                     await safeSend(student.chatId, `🚨 *FINAL WARNING!*\n\nYour payment is severely overdue. You have exactly 4 hours to complete your payment before you are automatically removed from the group.${SUPPORT_TEXT}`, { parse_mode: 'Markdown' });
                 }
             }
 
             if (student.status === 'warned' && student.warnedTimestamp) {
-                const warnedTime = new Date(student.warnedTimestamp);
-                const hoursPassedWarning = (now - warnedTime) / (1000 * 60 * 60);
+                const hoursPassedWarning = (now - new Date(student.warnedTimestamp)) / (1000 * 60 * 60);
 
                 if (hoursPassedWarning >= 4) {
                     try {
                         await bot.banChatMember(process.env.TELEGRAM_GROUP_CHAT_ID, student.chatId);
                         await safeSend(student.chatId, `❌ *Access Removed*\n\nYou did not complete the payment within the allotted time. You have been removed from the group. Contact support if this is a mistake.${SUPPORT_TEXT}`, { parse_mode: 'Markdown' });
-
-                        student.status = 'kicked';
-                        saveDB(db);
+                        await withDB(db2 => {
+                            const s = db2.find(x => x.invoiceId === student.invoiceId);
+                            if (s) s.status = 'kicked';
+                        });
                     } catch (err) {
-                        console.error(`❌ [cron:hourly] Failed to kick ${student.chatId}. Is the bot an admin in the group? Error:`, err.message);
+                        console.error(`❌ [cron:hourly] Failed to kick ${student.chatId}. Is the bot an admin? Error:`, err.message);
                     }
                 }
             }
         } catch (error) {
-            console.error(`❌ [cron:hourly] Error processing student ${student.firstName} ${student.lastName}:`, error.message);
-            // Continue to next student
+            console.error(`❌ [cron:hourly] Error processing ${student.firstName} ${student.lastName}:`, error.message);
         }
     }
-}, {
-    timezone: "Africa/Algiers"
-});
+}, { timezone: 'Africa/Algiers' });
 
-console.log("Telegram Bot is running...");
+console.log('Telegram Bot is running...');

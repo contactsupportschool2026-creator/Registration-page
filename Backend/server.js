@@ -1,71 +1,37 @@
 const express = require('express');
-const cors = require('cors');
-const fs = require('fs');
-const path = require('path');
-const axios = require('axios');
-const crypto = require('crypto');
+const cors    = require('cors');
+const axios   = require('axios');
+const crypto  = require('crypto');
 require('dotenv').config();
+
+const { initializeDB, withDB } = require('./db');
 
 const app = express();
 app.use(cors());
 app.use(express.json());
 
-const DB_PATH = path.join(__dirname, 'database.json');
 const TELEGRAM_API = `https://api.telegram.org/bot${process.env.TELEGRAM_BOT_TOKEN}/sendMessage`;
+
+// Initialize database file on startup
+initializeDB();
 
 // ==========================================
 // RACE CONDITION PREVENTION: Processing Lock
 // ==========================================
-// Keeps track of invoices currently being processed
+// In-process guard: prevents the same invoice webhook from being
+// handled twice concurrently within this server process.
+// Cross-process safety (vs. bot.js) is handled by db.js withDB().
 const processingInvoices = new Set();
 
 function lockInvoice(invoiceId) {
-    if (processingInvoices.has(invoiceId)) {
-        return false; // Already processing
-    }
+    if (processingInvoices.has(invoiceId)) return false;
     processingInvoices.add(invoiceId);
-    return true; // Successfully locked
+    return true;
 }
 
 function unlockInvoice(invoiceId) {
     processingInvoices.delete(invoiceId);
 }
-
-// ==========================================
-// DATABASE INITIALIZATION
-// ==========================================
-function initializeDB() {
-    if (!fs.existsSync(DB_PATH)) {
-        console.log("📁 database.json not found. Creating new database...");
-        fs.writeFileSync(DB_PATH, JSON.stringify([], null, 2));
-        console.log("✅ Database initialized successfully");
-    }
-}
-
-// Initialize database on startup
-initializeDB();
-
-// Helpers to read/write the database
-const getDB = () => {
-    try {
-        const data = fs.readFileSync(DB_PATH, 'utf-8');
-        return JSON.parse(data);
-    } catch (error) {
-        console.error("❌ Error reading database:", error.message);
-        console.log("⚠️ Returning empty array as fallback");
-        return [];
-    }
-};
-
-const saveDB = (data) => {
-    try {
-        fs.writeFileSync(DB_PATH, JSON.stringify(data, null, 2));
-        console.log("✅ Database saved successfully");
-    } catch (error) {
-        console.error("❌ Error writing database:", error.message);
-        throw new Error('Failed to save database');
-    }
-};
 
 // ==========================================
 // WEBHOOK SIGNATURE VERIFICATION HELPER
@@ -75,7 +41,6 @@ function verifyChargilySignature(payload, signature) {
         .createHmac('sha256', process.env.WEBHOOK_SECRET)
         .update(JSON.stringify(payload))
         .digest('hex');
-    
     return hash === signature;
 }
 
@@ -84,10 +49,8 @@ function verifyChargilySignature(payload, signature) {
 // ==========================================
 app.post('/api/create-checkout', async (req, res) => {
     try {
-        // 1. Capture ALL data from the HTML form
         const { firstName, lastName, email, dob, wilaya, shaba, isNizami, schoolName } = req.body;
 
-        // 2. Prepare student data for our database
         const studentData = {
             firstName,
             lastName,
@@ -97,22 +60,21 @@ app.post('/api/create-checkout', async (req, res) => {
             shaba,
             isNizami,
             schoolName,
-            status: 'pending', // Statuses: pending, paid, warned, kicked
+            status: 'pending',
             subscriptionStartDate: null,
             subscriptionEndDate: null,
-            chatId: null, // Will be saved when they click /start in Telegram
+            chatId: null,
             invoiceId: null,
             warnedTimestamp: null
         };
 
-        // 3. Create Checkout with Chargily Pay API
         const chargilyPayload = {
-            amount: 2000, // 2000 DA
+            amount: 2000,
             currency: 'dzd',
             description: `School Registration: ${firstName} ${lastName}`,
             client_name: `${firstName} ${lastName}`,
-            client_email: email, // ✅ Use actual student email
-            back_url: `${process.env.FRONTEND_URL}/payment.html`, // We will append invoice ID below
+            client_email: email,
+            back_url: `${process.env.FRONTEND_URL}/payment.html`,
             webhook_url: `${process.env.BACKEND_URL}/api/webhook/chargily`
         };
 
@@ -127,79 +89,72 @@ app.post('/api/create-checkout', async (req, res) => {
             }
         );
 
-        // 4. Save Invoice ID to database and write to file
         studentData.invoiceId = chargilyResponse.data.id;
-        const db = getDB();
-        db.push(studentData);
-        saveDB(db);
 
-        // 5. Redirect user to checkout URL, appending the invoice ID so payment.html knows who they are
+        // withDB acquires the cross-process lock before pushing the new student
+        await withDB(db => {
+            db.push(studentData);
+        });
+
         const checkoutUrl = `${chargilyResponse.data.checkout_url}?invoice=${studentData.invoiceId}`;
-        
         res.json({ checkoutUrl });
 
     } catch (error) {
-        console.error("Checkout Error:", error.response ? error.response.data : error.message);
+        console.error('❌ Checkout Error:', error.response ? error.response.data : error.message);
         res.status(500).json({ error: 'Failed to create payment link' });
     }
 });
 
 // ==========================================
-// ENDPOINT 2: CHARGILY WEBHOOK (Listens for payment success)
+// ENDPOINT 2: CHARGILY WEBHOOK
 // ==========================================
 app.post('/api/webhook/chargily', async (req, res) => {
     const signature = req.headers['x-chargily-signature'];
-    const payload = req.body;
+    const payload   = req.body;
 
-    // ✅ SECURITY: Verify webhook signature to prevent fake payments
     if (!signature) {
-        console.warn("⚠️ Webhook received without signature - REJECTED");
+        console.warn('⚠️ Webhook received without signature - REJECTED');
         return res.status(401).json({ error: 'Missing signature' });
     }
 
     if (!verifyChargilySignature(payload, signature)) {
-        console.warn("⚠️ Webhook signature mismatch - REJECTED (possible attack)");
+        console.warn('⚠️ Webhook signature mismatch - REJECTED (possible attack)');
         return res.status(401).json({ error: 'Invalid signature' });
     }
 
-    console.log("✅ Webhook signature verified - processing payment");
+    console.log('✅ Webhook signature verified - processing payment');
 
-    // Check if the payment is successful
     if (payload.status === 'paid') {
         const invoiceId = payload.id;
 
-        // 🔒 RACE CONDITION PREVENTION: Try to lock this invoice
+        // In-process duplicate guard
         if (!lockInvoice(invoiceId)) {
             console.warn(`⚠️ Invoice ${invoiceId} already being processed - DUPLICATE REJECTED`);
-            // Still respond 200 so Chargily doesn't retry
             return res.status(200).send('OK');
         }
 
         try {
-            const db = getDB();
-            
-            // Find the student in our database.json
-            const studentIndex = db.findIndex(s => s.invoiceId === invoiceId);
-            
-            // Double check status is still 'pending' (extra safety)
-            if (studentIndex !== -1 && db[studentIndex].status === 'pending') {
-                
-                // 1. Update Student Status & Subscription Dates
-                const now = new Date();
-                db[studentIndex].status = 'paid';
-                db[studentIndex].subscriptionStartDate = now.toISOString();
-                
-                // Set expiration to exactly 30 days from now
-                const expiration = new Date(now);
-                expiration.setDate(expiration.getDate() + 30);
-                db[studentIndex].subscriptionEndDate = expiration.toISOString();
-                
-                saveDB(db);
-                const s = db[studentIndex]; // Shortcut variable
+            let studentName = null;
 
-                // 2. Format Telegram message with ALL requested form data
-                const nizamiText = s.isNizami ? "نظامي" : "حر";
-                const message = `
+            // withDB holds the cross-process file lock for the full read-modify-write
+            await withDB(async db => {
+                const studentIndex = db.findIndex(s => s.invoiceId === invoiceId);
+
+                if (studentIndex !== -1 && db[studentIndex].status === 'pending') {
+                    const now        = new Date();
+                    const expiration = new Date(now);
+                    expiration.setDate(expiration.getDate() + 30);
+
+                    db[studentIndex].status                = 'paid';
+                    db[studentIndex].subscriptionStartDate = now.toISOString();
+                    db[studentIndex].subscriptionEndDate   = expiration.toISOString();
+
+                    studentName = `${db[studentIndex].firstName} ${db[studentIndex].lastName}`;
+
+                    // Build Telegram message (inside withDB so we have the data)
+                    const s          = db[studentIndex];
+                    const nizamiText = s.isNizami ? 'نظامي' : 'حر';
+                    const message    = `
 🟢 *دفعة جديدة ناجحة!*
 
 👤 *الإسم:* ${s.firstName} ${s.lastName}
@@ -211,56 +166,59 @@ app.post('/api/webhook/chargily', async (req, res) => {
 🏫 *اسم الثانوية:* ${s.schoolName}
 
 💎 *الحالة:* مدفوع (2000 دج)
-                `;
-                
-                const supportMention = `\n\n_For any issues, contact support: @${process.env.TELEGRAM_SUPPORT_USERNAME}_`;
+                    `;
+                    const supportMention = `\n\n_For any issues, contact support: @${process.env.TELEGRAM_SUPPORT_USERNAME}_`;
 
-                // 3. Send to your personal Telegram
-                await axios.post(TELEGRAM_API, {
-                    chat_id: process.env.TELEGRAM_CHAT_ID,
-                    text: message + supportMention,
-                    parse_mode: 'Markdown'
-                });
+                    // Send Telegram notification (inside withDB — lock released only after write)
+                    await axios.post(TELEGRAM_API, {
+                        chat_id:    process.env.TELEGRAM_CHAT_ID,
+                        text:       message + supportMention,
+                        parse_mode: 'Markdown'
+                    });
 
-                console.log(`✅ Payment confirmed and Telegram notified for ${s.firstName} ${s.lastName}`);
-            } else if (studentIndex !== -1 && db[studentIndex].status === 'paid') {
-                console.warn(`⚠️ Invoice ${invoiceId} already marked as paid - DUPLICATE PAYMENT IGNORED`);
-            } else {
-                console.warn(`❌ Invoice ${invoiceId} not found in database`);
+                } else if (studentIndex !== -1 && db[studentIndex].status === 'paid') {
+                    console.warn(`⚠️ Invoice ${invoiceId} already marked as paid - DUPLICATE IGNORED`);
+                } else {
+                    console.warn(`❌ Invoice ${invoiceId} not found in database`);
+                }
+            });
+
+            if (studentName) {
+                console.log(`✅ Payment confirmed and Telegram notified for ${studentName}`);
             }
+
         } catch (error) {
-            console.error("Webhook Error:", error.message);
-            // Still respond 200 to Chargily even if there's an error
+            console.error('❌ Webhook Error:', error.message);
+            // Still respond 200 so Chargily doesn't retry endlessly
         } finally {
-            // Always unlock when done
             unlockInvoice(invoiceId);
         }
     }
-    
-    // Always respond with 200 OK to Chargily so they know we received it
+
     res.status(200).send('OK');
 });
 
 // ==========================================
-// ENDPOINT 3: CHECK PAYMENT STATUS (Used by payment.html)
+// ENDPOINT 3: CHECK PAYMENT STATUS
 // ==========================================
-app.get('/api/check-payment/:invoiceId', (req, res) => {
+app.get('/api/check-payment/:invoiceId', async (req, res) => {
     try {
-        const db = getDB();
-        const student = db.find(s => s.invoiceId === req.params.invoiceId);
-        
+        // readDB acquires the lock for a consistent read
+        const { readDB } = require('./db');
+        const db         = await readDB();
+        const student    = db.find(s => s.invoiceId === req.params.invoiceId);
+
         if (student && student.status === 'paid') {
-            // Return everything payment.html needs to show the 2-step buttons
-            res.json({ 
-                success: true, 
+            res.json({
+                success:   true,
                 groupLink: process.env.TELEGRAM_GROUP_LINK,
-                botLink: `https://t.me/${process.env.TELEGRAM_BOT_USERNAME}?start=${student.invoiceId}`
+                botLink:   `https://t.me/${process.env.TELEGRAM_BOT_USERNAME}?start=${student.invoiceId}`
             });
         } else {
             res.json({ success: false });
         }
     } catch (error) {
-        console.error("Check Payment Error:", error.message);
+        console.error('❌ Check Payment Error:', error.message);
         res.status(500).json({ error: 'Failed to check payment status' });
     }
 });
