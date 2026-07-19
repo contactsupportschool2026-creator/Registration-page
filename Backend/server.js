@@ -38,7 +38,7 @@ function unlockInvoice(invoiceId) {
 // Re-serialising parsed JSON changes whitespace / key order and breaks the HMAC.
 function verifyChargilySignature(rawBody, signature) {
     const hash = crypto
-        .createHmac('sha256', process.env.WEBHOOK_SECRET)
+        .createHmac('sha256', process.env.CHARGILY_SECRET_KEY)
         .update(rawBody)          // raw Buffer — same bytes Chargily signed
         .digest('hex');
     return hash === signature;
@@ -54,7 +54,7 @@ app.post(
     express.raw({ type: 'application/json' }),   // gives us req.body as Buffer
     async (req, res) => {
         const rawBody   = req.body;               // Buffer
-        const signature = req.headers['x-chargily-signature'];
+        const signature = req.headers['signature'];
 
         if (!signature) {
             console.warn('⚠️ Webhook received without signature - REJECTED');
@@ -209,7 +209,7 @@ app.post('/api/create-checkout', async (req, res) => {
 
         const chargilyResponse = await withRetry(
             () => axios.post(
-                'https://pay.chargily.com/api/v2/checkouts',
+                'https://pay.chargily.net/api/v2/checkouts',
                 chargilyPayload,
                 {
                     headers: {
