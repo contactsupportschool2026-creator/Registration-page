@@ -71,7 +71,7 @@ async function createRenewalLink(student) {
     };
 
     const res = await withRetry(
-        () => axios.post('https://pay.chargily.com/api/v2/checkouts', payload, {
+        () => axios.post('https://pay.chargily.net/api/v2/checkouts', payload, {
             headers: {
                 'Authorization': `Bearer ${process.env.CHARGILY_SECRET_KEY}`,
                 'Content-Type': 'application/json'
