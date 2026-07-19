@@ -294,6 +294,42 @@ bot.onText(/\/delete (.+)/, async (msg, match) => {
 });
 
 // ==========================================
+// ADMIN COMMAND: /exportpdf - Download full student database as PDF
+// ==========================================
+bot.onText(/\/exportpdf/, async (msg) => {
+    const chatId = msg.chat.id;
+    if (!isAdmin(chatId)) return safeSend(chatId, '⛔ *Unauthorized* - Admin only command', { parse_mode: 'Markdown' });
+
+    try {
+        const db = await readDB();
+
+        if (db.length === 0) {
+            return safeSend(chatId, '📭 *No students in database* — nothing to export.', { parse_mode: 'Markdown' });
+        }
+
+        await safeSend(chatId, `⏳ Generating PDF for *${db.length}* student(s)…`, { parse_mode: 'Markdown' });
+
+        const { generateStudentsPDF } = require('./pdf');
+        const pdfBuffer = await generateStudentsPDF(db);
+
+        const now      = new Date();
+        const datePart = now.toISOString().split('T')[0]; // YYYY-MM-DD
+        const filename = `students-${datePart}.pdf`;
+
+        await bot.sendDocument(
+            chatId,
+            pdfBuffer,
+            { caption: `📄 Student export — ${db.length} student(s) — ${datePart}` },
+            { filename, contentType: 'application/pdf' }
+        );
+
+    } catch (error) {
+        console.error('❌ [/exportpdf] Error:', error.message);
+        await safeSend(chatId, `⚠️ Failed to generate PDF: ${error.message}`);
+    }
+});
+
+// ==========================================
 // ADMIN COMMAND 6: /help - Show Available Commands
 // ==========================================
 bot.onText(/\/help/, async (msg) => {
@@ -307,6 +343,7 @@ bot.onText(/\/help/, async (msg) => {
 \`/getall\` — List all students
 \`/getstudent <invoiceId>\` — Full details for one student
 \`/search <name>\` — Search students by first or last name
+\`/exportpdf\` — Download full database as a PDF file
 
 *💳 Payments*
 \`/sendlink <invoiceId>\` — Send a payment renewal link to a student
