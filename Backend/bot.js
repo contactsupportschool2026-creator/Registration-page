@@ -13,10 +13,33 @@ const SUPPORT_TEXT = `\n\n_For any issues, contact support: @${process.env.TELEG
 initializeDB();
 
 // ==========================================
-// HELPER: Check if user is admin
+// HELPER: Check if user is admin (chat ID match only — no session check)
 // ==========================================
 function isAdmin(chatId) {
-    return chatId.toString() === process.env.TELEGRAM_CHAT_ID;
+    return chatId.toString() === (process.env.TELEGRAM_CHAT_ID || '').trim();
+}
+
+// ==========================================
+// SESSION GATE: Admin authentication store
+// ==========================================
+// All three sets are keyed by chatId.toString().
+// They reset on every bot process restart (in-memory only, by design).
+const verifiedSessions = new Set(); // chat IDs that passed the gate this session
+const blockedUsers     = new Set(); // chat IDs that sent a wrong chat ID
+const challengedUsers  = new Set(); // chat IDs that received the challenge prompt
+
+/** Returns true only if chatId has been verified this session. */
+function isVerified(chatId) {
+    return verifiedSessions.has(chatId.toString());
+}
+
+/**
+ * Used by all admin command handlers.
+ * Requires BOTH the correct chat ID AND an active session verification.
+ * Returns silently on failure — the gate handler manages all user-facing messages.
+ */
+function isAuthorized(chatId) {
+    return isAdmin(chatId) && isVerified(chatId);
 }
 
 // ==========================================
@@ -73,6 +96,51 @@ async function createRenewalLink(student) {
 // ==========================================
 // FEATURE 1: STUDENT REGISTERS THEIR TELEGRAM ID
 // ==========================================
+// ==========================================
+// GLOBAL MESSAGE GATE
+// Intercepts every incoming message before command handlers run.
+// Exempt: /start <token>  — used by students for account linking, no auth needed.
+// ==========================================
+bot.on('message', async (msg) => {
+    const chatId = msg.chat.id.toString();
+    const text   = (msg.text || '').trim();
+
+    // ── Exempt: student onboarding link (/start <invoiceId>) ────────────────
+    if (/^\/start\s+\S+/.test(text)) return;
+
+    // ── Already verified this session → let command handlers run ────────────
+    if (isVerified(chatId)) return;
+
+    // ── Permanently blocked this session → silently ignore ──────────────────
+    if (blockedUsers.has(chatId)) return;
+
+    const adminId = (process.env.TELEGRAM_CHAT_ID || '').trim();
+
+    // ── User was challenged; this message is their chat ID response ──────────
+    if (challengedUsers.has(chatId)) {
+        challengedUsers.delete(chatId);
+        if (text === adminId) {
+            verifiedSessions.add(chatId);
+            await safeSend(chatId, '✅ *Access granted.* Welcome, Admin!', { parse_mode: 'Markdown' });
+        } else {
+            blockedUsers.add(chatId);
+            await safeSend(chatId, '⛔ Access denied. This bot is restricted to the admin only.');
+        }
+        return;
+    }
+
+    // ── First contact (or first message after restart) → send challenge ──────
+    challengedUsers.add(chatId);
+    await safeSend(
+        chatId,
+        '🔐 *Admin access required.*\n\nPlease send your Chat ID to continue.',
+        { parse_mode: 'Markdown' }
+    );
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// STUDENT COMMAND: /start <invoiceId>  (exempt from the gate above)
+// ─────────────────────────────────────────────────────────────────────────────
 bot.onText(/\/start (.+)/, async (msg, match) => {
     const chatId    = msg.chat.id;
     const invoiceId = match[1];
@@ -104,7 +172,7 @@ bot.onText(/\/start (.+)/, async (msg, match) => {
 // ==========================================
 bot.onText(/\/getall/, async (msg) => {
     const chatId = msg.chat.id;
-    if (!isAdmin(chatId)) return safeSend(chatId, '⛔ *Unauthorized* - Admin only command', { parse_mode: 'Markdown' });
+    if (!isAuthorized(chatId)) return;
 
     try {
         const db = await readDB();
@@ -140,7 +208,7 @@ bot.onText(/\/getall/, async (msg) => {
 // ==========================================
 bot.onText(/\/getstudent (.+)/, async (msg, match) => {
     const chatId = msg.chat.id;
-    if (!isAdmin(chatId)) return safeSend(chatId, '⛔ *Unauthorized* - Admin only command', { parse_mode: 'Markdown' });
+    if (!isAuthorized(chatId)) return;
 
     try {
         const invoiceId = match[1].trim();
@@ -163,7 +231,7 @@ bot.onText(/\/getstudent (.+)/, async (msg, match) => {
 // ==========================================
 bot.onText(/\/search (.+)/, async (msg, match) => {
     const chatId = msg.chat.id;
-    if (!isAdmin(chatId)) return safeSend(chatId, '⛔ *Unauthorized* - Admin only command', { parse_mode: 'Markdown' });
+    if (!isAuthorized(chatId)) return;
 
     try {
         const query   = match[1].trim().toLowerCase();
@@ -202,7 +270,7 @@ bot.onText(/\/search (.+)/, async (msg, match) => {
 // ==========================================
 bot.onText(/\/updatestatus (.+) (.+)/, async (msg, match) => {
     const chatId = msg.chat.id;
-    if (!isAdmin(chatId)) return safeSend(chatId, '⛔ *Unauthorized* - Admin only command', { parse_mode: 'Markdown' });
+    if (!isAuthorized(chatId)) return;
 
     try {
         const invoiceId    = match[1].trim();
@@ -238,7 +306,7 @@ bot.onText(/\/updatestatus (.+) (.+)/, async (msg, match) => {
 // ==========================================
 bot.onText(/\/updatechat (.+) (.+)/, async (msg, match) => {
     const chatId = msg.chat.id;
-    if (!isAdmin(chatId)) return safeSend(chatId, '⛔ *Unauthorized* - Admin only command', { parse_mode: 'Markdown' });
+    if (!isAuthorized(chatId)) return;
 
     try {
         const invoiceId  = match[1].trim();
@@ -269,7 +337,7 @@ bot.onText(/\/updatechat (.+) (.+)/, async (msg, match) => {
 // ==========================================
 bot.onText(/\/delete (.+)/, async (msg, match) => {
     const chatId = msg.chat.id;
-    if (!isAdmin(chatId)) return safeSend(chatId, '⛔ *Unauthorized* - Admin only command', { parse_mode: 'Markdown' });
+    if (!isAuthorized(chatId)) return;
 
     try {
         const invoiceId = match[1].trim();
@@ -298,7 +366,7 @@ bot.onText(/\/delete (.+)/, async (msg, match) => {
 // ==========================================
 bot.onText(/\/exportpdf/, async (msg) => {
     const chatId = msg.chat.id;
-    if (!isAdmin(chatId)) return safeSend(chatId, '⛔ *Unauthorized* - Admin only command', { parse_mode: 'Markdown' });
+    if (!isAuthorized(chatId)) return;
 
     try {
         const db = await readDB();
@@ -334,7 +402,7 @@ bot.onText(/\/exportpdf/, async (msg) => {
 // ==========================================
 bot.onText(/\/help/, async (msg) => {
     const chatId = msg.chat.id;
-    if (!isAdmin(chatId)) return safeSend(chatId, '⛔ *Unauthorized* - Admin only command', { parse_mode: 'Markdown' });
+    if (!isAuthorized(chatId)) return;
 
     const helpMessage = `
 🤖 *Admin Commands*
@@ -369,7 +437,7 @@ bot.onText(/\/help/, async (msg) => {
 // ==========================================
 bot.onText(/\/sendlink (.+)/, async (msg, match) => {
     const adminChatId = msg.chat.id;
-    if (!isAdmin(adminChatId)) return safeSend(adminChatId, '⛔ Unauthorized.');
+    if (!isAuthorized(adminChatId)) return;
 
     try {
         const invoiceId = match[1].trim();
@@ -401,7 +469,7 @@ bot.onText(/\/sendlink (.+)/, async (msg, match) => {
 // ==========================================
 bot.onText(/\/extend (.+) (.+)/, async (msg, match) => {
     const adminChatId = msg.chat.id;
-    if (!isAdmin(adminChatId)) return safeSend(adminChatId, '⛔ Unauthorized.');
+    if (!isAuthorized(adminChatId)) return;
 
     try {
         const targetChatId = match[1].trim();
@@ -581,4 +649,17 @@ cron.schedule('0 * * * *', async () => {
     }
 }, { timezone: 'Africa/Algiers' });
 
-console.log('Telegram Bot is running...');
+console.log('🤖 Telegram Bot is running...');
+
+// Notify admin that the bot process has (re)started.
+// The admin will need to re-verify their session since sessions are in-memory.
+(async () => {
+    try {
+        const adminId = (process.env.TELEGRAM_CHAT_ID || '').trim();
+        if (adminId) {
+            await safeSend(adminId, '🤖 *Bot is online and ready.*\n\nSend your Chat ID to begin your session.', { parse_mode: 'Markdown' });
+        }
+    } catch (e) {
+        console.error('⚠️ Could not send startup notification:', e.message);
+    }
+})();
